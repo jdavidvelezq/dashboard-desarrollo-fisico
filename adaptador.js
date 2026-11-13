@@ -1,10 +1,11 @@
 /**
  * adaptador.js — Dashboard Dirección de Desarrollo Físico
- * Capa de adaptación sobre el código base de DIAT. No modifica los datos:
+ * Capa de adaptación sobre el código base de DIAT. No modifica los datos del Sheet:
  *  1) Redirige las lecturas al Google Sheet propio (BASE_DASHBOARD).
  *  2) Desconecta los servicios del proyecto original (Supabase y Apps Script de DIAT).
- *  3) Traduce, solo en memoria, los nombres de columna del informe de contratos
- *     a los nombres que espera el código de DIAT. Las columnas originales se conservan.
+ *  3) Crea, solo en memoria, campos con los nombres que espera el código de DIAT a partir
+ *     de las columnas del informe de contratos. Las columnas originales se conservan intactas.
+ *  4) Normaliza en memoria SUBREGIÓN y TIPO, e identifica contratos derivados.
  * Debe cargarse DESPUÉS de xlsx y supabase-js, y ANTES de diat_service.js y script.js.
  */
 (function () {
@@ -46,18 +47,68 @@
     // Sin cliente Supabase el código base trabaja en modo local
     try { window.supabase = undefined; } catch (e) { /* noop */ }
 
-    // ---------------------------------------------------------------- 3: columnas
+    // ---------------------------------------------------------------- utilidades
     function norm(s) {
         return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '')
             .toUpperCase().replace(/\s+/g, ' ').trim();
     }
+
+    // ---------------------------------------------------------------- 4: normalizaciones
+    var SUBREGIONES = [
+        ['BAJO CAUCA', /BAJO\s*C+AUCA/],
+        ['MAGDALENA MEDIO', /MAGDALENA\s*MEDIO/],
+        ['NORDESTE', /NORDESTE/],
+        ['NORTE', /NORTE(?!\s*DE)/],
+        ['OCCIDENTE', /OCCIDENTE/],
+        ['ORIENTE', /ORIENTE/],
+        ['SUROESTE', /SUROESTE/],
+        ['URABÁ', /URABA/],
+        ['VALLE DE ABURRÁ', /VALLE\s*DE\s*ABURRA/]
+    ];
+
+    // Devuelve { principal, detalle } sin alterar el valor original de la celda
+    function normalizarSubregion(valor) {
+        var s = norm(valor);
+        if (!s) return { principal: '', detalle: '' };
+        if (/\bVARIAS\b/.test(s)) return { principal: 'MULTIREGIONAL', detalle: 'VARIAS' };
+        var halladas = [];
+        // NORDESTE contiene "NORTE" solo como texto distinto; se busca primero y se retira
+        var resto = s;
+        SUBREGIONES.forEach(function (par) {
+            if (par[1].test(resto)) {
+                halladas.push(par[0]);
+                resto = resto.replace(par[1], ' ');
+            }
+        });
+        if (halladas.length === 1) return { principal: halladas[0], detalle: halladas[0] };
+        if (halladas.length > 1) return { principal: 'MULTIREGIONAL', detalle: halladas.join(', ') };
+        return { principal: String(valor).trim().toUpperCase(), detalle: String(valor).trim().toUpperCase() };
+    }
+
+    function normalizarTipo(valor) {
+        var s = norm(valor);
+        var mapa = { 'INTERVENTORIA': 'INTERVENTORÍA', 'CONSULTORIA': 'CONSULTORÍA' };
+        return mapa[s] || String(valor == null ? '' : valor).trim().toUpperCase();
+    }
+
+    // CONTRATO N° → número, si es derivado y de cuál (solo si el texto lo dice)
+    function analizarContrato(valor) {
+        var txt = String(valor == null ? '' : valor);
+        var unaLinea = txt.replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+        var m = unaLinea.match(/^([0-9A-Z]+)/i);
+        var numero = m ? m[1].toUpperCase() : unaLinea;
+        var esDerivado = /DERIVADO/i.test(unaLinea);
+        var padre = '';
+        var p = unaLinea.match(/DERIVADO\s*DE\s*([0-9A-Z]+)/i);
+        if (p) padre = p[1].toUpperCase();
+        return { texto: unaLinea, numero: numero, derivado: esDerivado, padre: padre };
+    }
+
+    // ---------------------------------------------------------------- 3: columnas
     // nombre que espera DIAT  <-  encabezado del informe de contratos
     var ALIAS = [
-        ['CONVENIO', 'CONTRATO N°'],
         ['ESTADO CONVENIO', 'ESTADO'],
-        ['INDICADOR', 'TIPO'],
         ['CLASIFICACIÓN', 'FUENTE DE FINANCIACIÓN'],
-        ['SUBREGION', 'SUBREGIÓN'],
         ['CONVENIANTE EJECUTOR', 'CONTRATISTA'],
         ['OBJETO', 'OBJETO CONTRATO'],
         ['FECHA DE SUSCRIPCIÓN', 'FECHA DE SUSCRIPCIÓN DEL CONTRATO'],
@@ -66,14 +117,16 @@
         ['NUEVA FECHA DE TERMINACIÓN', 'FECHA FINAL ACTUALIZADA'],
         ['% EJECUCIÓN FÍSICA', 'EJECUCION FISICA REAL (REPORTADA)'],
         ['% EJECUCIÓN FINANCIERA', 'EJECUCION FINANCIERA REAL'],
+        // Financiero: las cajas del código base se reetiquetan en pantalla (personalizacion.js)
         ['VALOR TOTAL', 'VALOR TOTAL INCLUIDAS ADICIONES'],
         ['VALOR TOTAL CON ADICIONES', 'VALOR TOTAL INCLUIDAS ADICIONES'],
-        ['VALOR TOTAL DESEMBOLSADO', 'RECURSO PAGADO']
+        ['APORTE DEPARTAMENTO', 'VALOR TOTAL INCLUIDAS ADICIONES'],          // se muestra como "Valor total"
+        ['VALOR TOTAL AUTORIZADO DEPARTAMENTO', 'RECURSO EJECUTADO'],        // se muestra como "Ejecutado"
+        ['VALOR TOTAL DESEMBOLSADO', 'RECURSO PAGADO']                       // se muestra como "Pagado"
     ];
 
     function esInformeContratos(headers) {
-        var n = headers.map(norm);
-        return n.indexOf('CONTRATO N°') !== -1 || n.indexOf(norm('CONTRATO N°')) !== -1;
+        return headers.map(norm).indexOf(norm('CONTRATO N°')) !== -1;
     }
 
     function encabezados(ws) {
@@ -85,6 +138,12 @@
             out.push(cell ? String(cell.v) : '');
         }
         return out;
+    }
+
+    function buscarClave(keys, nombre) {
+        var n = norm(nombre);
+        for (var i = 0; i < keys.length; i++) if (norm(keys[i]) === n) return keys[i];
+        return undefined;
     }
 
     function instalar() {
@@ -118,23 +177,41 @@
             try {
                 if (!Array.isArray(rows) || !rows.length || Array.isArray(rows[0])) return rows;
                 if (!esInformeContratos(encabezados(ws))) return rows;
+                var kContrato = buscarClave(Object.keys(rows[0]), 'CONTRATO N°');
                 rows = rows.filter(function (row) {
-                    var k = Object.keys(row).find(function (x) { return norm(x) === norm('CONTRATO N°'); });
+                    var k = kContrato || buscarClave(Object.keys(row), 'CONTRATO N°');
                     return k && String(row[k]).trim() !== '';
                 });
-                rows.forEach(function (row) {
+
+                // números repetidos → se distinguen con el N° del informe
+                var info = rows.map(function (row) {
+                    return analizarContrato(row[kContrato || buscarClave(Object.keys(row), 'CONTRATO N°')]);
+                });
+                var cuenta = {};
+                info.forEach(function (x) { cuenta[x.numero] = (cuenta[x.numero] || 0) + 1; });
+
+                rows.forEach(function (row, i) {
                     var keys = Object.keys(row);
                     ALIAS.forEach(function (pair) {
-                        var destino = pair[0], origen = norm(pair[1]);
-                        var k = keys.find(function (x) { return norm(x) === origen; });
-                        if (k === undefined) return;
-                        var v = row[k];
-                        if (destino === 'CONVENIO') {
-                            // misma información, en una sola línea, para usarla como identificador
-                            v = String(v).replace(/\s*\n\s*/g, ' ').trim();
-                        }
-                        row[destino] = v;
+                        var k = buscarClave(keys, pair[1]);
+                        if (k !== undefined) row[pair[0]] = row[k];
                     });
+
+                    var x = info[i];
+                    var kN = buscarClave(keys, 'N°');
+                    var nInforme = kN !== undefined ? String(row[kN]).trim() : String(i + 1);
+                    row['CONVENIO'] = cuenta[x.numero] > 1 ? x.numero + ' · N° ' + nInforme : x.numero;
+                    row['CONTRATO (TEXTO ORIGINAL)'] = x.texto;
+                    row['DERIVADO'] = x.derivado ? 'SÍ' : 'NO';
+                    row['DERIVADO DE'] = x.derivado ? (x.padre || 'No indicado') : '';
+
+                    var kSub = buscarClave(keys, 'SUBREGIÓN');
+                    var sub = normalizarSubregion(kSub !== undefined ? row[kSub] : '');
+                    row['SUBREGION'] = sub.principal;
+                    row['SUBREGIONES (DETALLE)'] = sub.detalle;
+
+                    var kTipo = buscarClave(keys, 'TIPO');
+                    row['INDICADOR'] = normalizarTipo(kTipo !== undefined ? row[kTipo] : '');
                 });
             } catch (e) { console.warn('[Adaptador] sheet_to_json:', e); }
             return rows;
@@ -142,6 +219,8 @@
         console.info('[Adaptador] Instalado. Fuente:', CFG.SHEET_ID);
         return true;
     }
+
+    window.DDF_UTIL = { norm: norm, normalizarSubregion: normalizarSubregion, analizarContrato: analizarContrato, buscarClave: buscarClave };
 
     if (!instalar()) {
         document.addEventListener('DOMContentLoaded', instalar);
