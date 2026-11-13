@@ -194,10 +194,30 @@
             window.DDF_METRICAS = m;
             cards.fin.innerHTML = htmlFinanciero(m);
             cards.av.innerHTML = htmlAvance(m);
+
+            // subregiones impactadas = subregiones reales nombradas en los contratos filtrados
+            var subs = {};
+            rows.forEach(function (row) {
+                String(row['SUBREGIONES (DETALLE)'] || '').split(',').forEach(function (x) {
+                    x = x.trim();
+                    if (x && x !== 'VARIAS') subs[x] = 1;
+                });
+            });
+            var elSubs = document.getElementById('kpi-subregiones');
+            if (elSubs) elSubs.textContent = Object.keys(subs).length;
         } catch (e) { console.warn('[Personalización] render:', e); }
     }
 
     window.DDF_CALCULAR = calcular;
+
+    // MULTIREGIONAL se conserva como valor válido de subregión (el código base solo acepta las 9 oficiales)
+    if (typeof window.getCanonicalOfficialSubregion === 'function') {
+        var subOriginal = window.getCanonicalOfficialSubregion;
+        window.getCanonicalOfficialSubregion = function (s) {
+            if (String(s || '').trim().toUpperCase() === 'MULTIREGIONAL') return 'MULTIREGIONAL';
+            return subOriginal.apply(this, arguments);
+        };
+    }
 
     // se engancha a la actualización del código base
     if (typeof window.updateDashboard === 'function') {
