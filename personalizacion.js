@@ -282,3 +282,126 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar);
     else iniciar();
 })();
+
+/* ------------------------------------------------------------------------------------------
+ * Ficha técnica en PDF (generateProfessionalPDF del código base).
+ * El código base trae valores por defecto inventados: municipio "FREDONIA" cuando no hay
+ * municipio y "700 m" de alcance cuando no hay longitudes. Aquí se neutralizan, se corrige
+ * el conteo de tramos y se ajustan las etiquetas institucionales. No se alteran los datos.
+ * ---------------------------------------------------------------------------------------- */
+(function () {
+    'use strict';
+    var ctx = null;
+
+    var ETIQUETAS = [
+        [/^DIRECCIÓN DE INFRAESTRUCTURA Y APOYO TERRITORIAL$/, 'DIRECCIÓN DE DESARROLLO FÍSICO'],
+        [/^FICHA TÉCNICA DE CONVENIO$/, 'FICHA TÉCNICA DE CONTRATO'],
+        [/^CONVENIANTE EJECUTOR$/, 'CONTRATISTA']
+    ];
+
+    function num(v) { var n = parseFloat(v); return isFinite(n) ? n : 0; }
+
+    function sinAlcance(row) {
+        try {
+            return !(num(getRowLongitudEjecutada(row)) > 0 || num(getRowAreaEjecutada(row)) > 0 ||
+                num(getRowLongitudContratada(row)) > 0);
+        } catch (e) { return false; }
+    }
+
+    function corregirTexto(s) {
+        if (!ctx || typeof s !== 'string' || s.length > 80 || ctx.valores[s]) return s;
+        for (var i = 0; i < ETIQUETAS.length; i++) if (ETIQUETAS[i][0].test(s)) return ETIQUETAS[i][1];
+        if (ctx.sinAlcance && s === '700 m') return 'Sin dato';
+        if (ctx.sinMunicipio) {
+            if (s === 'FREDONIA') return 'NO INDICADO';
+            if (/^[A-ZÁÉÍÓÚÑ ]+ · ANTIOQUIA$/.test(s)) return (ctx.subregion || 'SUBREGIÓN NO INDICADA') + ' · ANTIOQUIA';
+            if (s.indexOf('FREDONIA') !== -1) return s.replace(/FREDONIA/g, 'NO INDICADO');
+        }
+        return s;
+    }
+
+    function recorrer(n, prof) {
+        if (!n || prof > 60) return n;
+        if (typeof n === 'string') return corregirTexto(n);
+        if (Array.isArray(n)) { for (var i = 0; i < n.length; i++) n[i] = recorrer(n[i], prof + 1); return n; }
+        if (typeof n === 'object') {
+            for (var k in n) {
+                if (!Object.prototype.hasOwnProperty.call(n, k) || k === 'svg' || k === 'image') continue;
+                if (k === 'text' || typeof n[k] === 'object') n[k] = recorrer(n[k], prof + 1);
+            }
+        }
+        return n;
+    }
+
+    function instalarPdf() {
+        if (typeof window.generateProfessionalPDF !== 'function' || window.generateProfessionalPDF.__ddf) return false;
+        var original = window.generateProfessionalPDF;
+        var envuelto = async function (row) {
+            var valores = {};
+            if (row) Object.keys(row).forEach(function (k) { if (typeof row[k] === 'string') valores[row[k]] = true; });
+            ctx = {
+                row: row,
+                valores: valores,
+                sinMunicipio: !String((row && row['MUNICIPIO']) || '').trim(),
+                sinAlcance: sinAlcance(row || {}),
+                subregion: String((row && row['SUBREGION']) || '').toUpperCase()
+            };
+            envolverPdfMake();
+            try { return await original.apply(this, arguments); }
+            finally { ctx = null; }
+        };
+        envuelto.__ddf = true;
+        window.generateProfessionalPDF = envuelto;
+
+        // Sin municipio no se dibujan mapas centrados en un municipio por defecto
+        ['generateAntioquiaSVG', 'generateMunicipalSVG'].forEach(function (nombre) {
+            var f = window[nombre];
+            if (typeof f !== 'function') return;
+            window[nombre] = async function (muni, row) {
+                if (ctx && ctx.sinMunicipio) return nombre === 'generateMunicipalSVG' ? { svgString: null, featuresCount: 0 } : null;
+                var r = await f.apply(this, arguments);
+                // "N tramos": se cuentan solo las líneas del trazado, no los puntos (fotos, extremos)
+                if (nombre === 'generateMunicipalSVG' && r && row && typeof loadMapData === 'function') {
+                    try {
+                        var md = await loadMapData(String(row['CONVENIO']).trim());
+                        if (md && md.type === 'kml') {
+                            var lineas = (String(md.data).match(/<LineString/g) || []).length;
+                            if (lineas > 0) r.featuresCount = lineas;
+                        }
+                    } catch (e) { /* noop */ }
+                }
+                return r;
+            };
+        });
+
+        envolverPdfMake();
+        return true;
+    }
+
+    function envolverPdfMake() {
+        if (window.pdfMake && typeof pdfMake.createPdf === 'function' && !pdfMake.createPdf.__ddf) {
+            var crear = pdfMake.createPdf;
+            pdfMake.createPdf = function (doc) {
+                if (ctx && doc) {
+                    try { recorrer(doc.content, 0); recorrer(doc.header, 0); recorrer(doc.footer, 0); }
+                    catch (e) { console.warn('[Personalización] PDF:', e); }
+                }
+                var pdf = crear.apply(this, arguments);
+                if (ctx && pdf && typeof pdf.download === 'function') {
+                    var descargar = pdf.download;
+                    pdf.download = function (nombre) {
+                        if (typeof nombre === 'string') arguments[0] = nombre.replace('Ficha_Tecnica_Convenio_', 'Ficha_Tecnica_Contrato_');
+                        return descargar.apply(this, arguments);
+                    };
+                }
+                return pdf;
+            };
+            pdfMake.createPdf.__ddf = true;
+        }
+    }
+
+    if (!instalarPdf()) {
+        var intentos = 0;
+        var t = setInterval(function () { if (instalarPdf() || ++intentos > 40) clearInterval(t); }, 250);
+    }
+})();
