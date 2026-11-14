@@ -32,6 +32,13 @@
     // Fotos: mientras no exista Apps Script propio, se leen de un índice estático
     // (assets/fotos/drive_index.json) con las URL de las fotos compartidas en Drive.
     var indiceFotos = null;
+    // El código base guarda las fotos en la caché del navegador y no vuelve a consultarlas;
+    // se limpia en cada carga para leer siempre el índice vigente.
+    try {
+        [window.localStorage, window.sessionStorage].forEach(function (st) {
+            Object.keys(st).forEach(function (k) { if (k.indexOf('diat_drive_cache_') === 0) st.removeItem(k); });
+        });
+    } catch (e) { /* noop */ }
     function fotosDesdeIndice(url) {
         var m = /[?&]convenio=([^&]*)/.exec(url);
         var conv = m ? decodeURIComponent(m[1]).trim() : '';
