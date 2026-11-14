@@ -410,8 +410,8 @@
  * Ficha del contrato (modal): panel "Seguimiento del contrato".
  * 1) Muestra las columnas propias del informe de contratos que el código base no conoce
  *    (avance programado, retraso, riesgo, actividades, pendientes, observaciones por área...).
- * 2) Si el contrato tiene información complementaria en assets/contratos/detalle.json
- *    (tomada de los documentos del contrato), la muestra con su fuente.
+ * 2) Muestra la información complementaria de las columnas adicionales de la misma fila
+ *    (proyecto, interventoría, avance mensual, actas, presupuesto, PMA, personal y fuentes).
  * ---------------------------------------------------------------------------------------- */
 (function () {
     'use strict';
@@ -531,49 +531,106 @@
         return html + fuente('Informe de contratos (BASE_DASHBOARD)');
     }
 
-    function seccionDetalle(d) {
+    // ---- Información complementaria: columnas adicionales de la misma fila del informe
+    var PROYECTO = ['MUNICIPIO', 'VÍA', 'CÓDIGO VÍA', 'TIPO DE VÍA', 'LONGITUD TOTAL VÍA (km)', 'ABSCISA INICIO', 'ABSCISA FIN',
+        'LONGITUD INTERVENIDA (m)', 'COORDENADAS INICIO (MAGNA-SIRGAS ORIGEN NACIONAL)', 'COORDENADAS FIN (MAGNA-SIRGAS ORIGEN NACIONAL)',
+        'ESTRUCTURA DE PAVIMENTO', 'DRENAJE', 'CONTENCIÓN', 'POBLACIÓN BENEFICIARIA', 'PLAZO SEGÚN ESTUDIOS'];
+    var PARTES = ['INTEGRANTES CONTRATISTA', 'A.I.U.', 'INTERVENTORÍA', 'CONTRATO INTERVENTORÍA', 'INTEGRANTES INTERVENTORÍA'];
+    var PERSONAL = ['PERSONAL VINCULADO (ACUMULADO)', 'PERSONAL ACTIVO', 'ACCIDENTES EN EL MES', 'DÍAS DE INCAPACIDAD',
+        'COMITÉS DE OBRA (ACUMULADO)', 'INFORMES SEMANALES (ACUMULADO)'];
+
+    function num(v) {
+        if (typeof v === 'number') return v;
+        var s = String(v == null ? '' : v).replace(/[$\s]/g, '');
+        if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.replace(/,/g, '');
+        var n = parseFloat(s);
+        return isFinite(n) ? n : null;
+    }
+    function lineas(v) {
+        if (vacio(v)) return [];
+        return String(v).split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean)
+            .map(function (l) { return l.split(';').map(function (p) { return p.trim(); }); });
+    }
+    function valor(nombre, v) {
+        if (/A\.I\.U|%/.test(nombre)) return fmtPct(pct(v));
+        if (/CONTRATO/.test(nombre)) return String(v).trim();
+        if (typeof v === 'number') return v.toLocaleString('es-CO', { maximumFractionDigits: 2 });
+        return String(v).trim();
+    }
+    function tablaCampos(row, lista) {
+        var filas = lista.filter(function (c) { return !vacio(campo(row, c)); });
+        if (!filas.length) return '';
+        return '<table>' + filas.map(function (c) {
+            return '<tr><th style="width:38%">' + esc(c) + '</th><td>' + esc(valor(c, campo(row, c))) + '</td></tr>';
+        }).join('') + '</table>';
+    }
+
+    function seccionComplementaria(row) {
         var html = '';
-        if (d.proyecto || d.partes) {
+        var tp = tablaCampos(row, PROYECTO), tc = tablaCampos(row, PARTES);
+        if (tp || tc) {
             html += '<div class="ddf-2">';
-            if (d.proyecto) html += '<div><h5>Proyecto</h5>' + tablaDatos(d.proyecto.datos) + fuente(d.proyecto.fuente) + '</div>';
-            if (d.partes) html += '<div><h5>Contratista e interventoría</h5>' + tablaDatos(d.partes.datos) + fuente(d.partes.fuente) + '</div>';
+            if (tp) html += '<div><h5>Proyecto</h5>' + tp + '</div>';
+            if (tc) html += '<div><h5>Contratista e interventoría</h5>' + tc + '</div>';
             html += '</div>';
         }
-        html += '<div class="ddf-2">';
-        if (d.avance_mensual) {
-            var am = d.avance_mensual;
-            html += '<div><h5>Avance mensual</h5><table><tr><th>Periodo</th><th>Física</th><th></th><th>Recursos</th><th></th></tr>' +
-                am.periodos.map(function (p) {
-                    return '<tr><td>' + esc(p.mes) + '</td><td class="n">' + fmtPct(p.fisico) + '</td><td><div class="ddf-bar"><i style="width:' + Math.min(100, p.fisico) + '%"></i></div></td>' +
-                        '<td class="n">' + fmtPct(p.recursos) + '</td><td><div class="ddf-bar"><i style="width:' + Math.min(100, p.recursos) + '%;background:#2563EB"></i></div></td></tr>';
-                }).join('') + '</table>' + (am.nota ? '<div class="ddf-nota">' + esc(am.nota) + '</div>' : '') + fuente(am.fuente) + '</div>';
+        var av = lineas(campo(row, 'AVANCE MENSUAL (FECHA CORTE; % FÍSICO; % RECURSOS)'));
+        var ac = lineas(campo(row, 'ACTAS DE PAGO (ACTA; FECHA; VALOR)'));
+        if (av.length || ac.length) {
+            html += '<div class="ddf-2">';
+            if (av.length) {
+                var ult = av[av.length - 1], fr = pct(campo(row, 'EJECUCION FISICA REAL (REPORTADA)')), fu = pct(ult[1]);
+                html += '<div><h5>Avance mensual</h5><table><tr><th>Corte</th><th>Física</th><th></th><th>Recursos</th><th></th></tr>' +
+                    av.map(function (p) {
+                        var f = pct(p[1]) || 0, r = pct(p[2]) || 0;
+                        return '<tr><td>' + esc(fecha(p[0])) + '</td><td class="n">' + fmtPct(pct(p[1])) + '</td><td><div class="ddf-bar"><i style="width:' + Math.min(100, f) + '%"></i></div></td>' +
+                            '<td class="n">' + fmtPct(pct(p[2])) + '</td><td><div class="ddf-bar"><i style="width:' + Math.min(100, r) + '%;background:#2563EB"></i></div></td></tr>';
+                    }).join('') + '</table>' +
+                    (fr != null && fu != null && Math.abs(fr - fu) > 0.005 ? '<div class="ddf-nota">La columna de ejecución física real reporta ' + fmtPct(fr) +
+                        '; el último corte mensual (' + esc(fecha(ult[0])) + ') reporta ' + fmtPct(fu) + '.</div>' : '') + '</div>';
+            }
+            if (ac.length) {
+                var tot = 0;
+                html += '<div><h5>Actas de pago</h5><table><tr><th>Acta</th><th>Fecha</th><th style="text-align:right">Valor</th></tr>' +
+                    ac.map(function (a) { var v = num(a[2]) || 0; tot += v; return '<tr><td>' + esc(a[0]) + '</td><td>' + esc(fecha(a[1])) + '</td><td class="n">' + fmtMoney(v) + '</td></tr>'; }).join('') +
+                    '<tr><th colspan="2">Total actas</th><td class="n"><b>' + fmtMoney(tot) + '</b></td></tr></table>';
+                var pag = num(campo(row, 'RECURSO PAGADO'));
+                if (pag != null) html += '<div class="ddf-nota">Recurso pagado según el informe: ' + fmtMoney(pag) + '.</div>';
+                html += '</div>';
+            }
+            html += '</div>';
         }
-        if (d.actas_pago) {
-            var ap = d.actas_pago, tot = 0;
-            html += '<div><h5>Actas de pago</h5><table><tr><th>Acta</th><th>Fecha</th><th style="text-align:right">Valor</th></tr>' +
-                ap.items.map(function (a) { tot += a[2]; return '<tr><td>' + esc(a[0]) + '</td><td>' + esc(a[1]) + '</td><td class="n">' + fmtMoney(a[2]) + '</td></tr>'; }).join('') +
-                '<tr><th colspan="2">Total actas</th><td class="n"><b>' + fmtMoney(tot) + '</b></td></tr></table>' +
-                (ap.nota ? '<div class="ddf-nota">' + esc(ap.nota) + '</div>' : '') + fuente(ap.fuente) + '</div>';
-        }
-        html += '</div>';
-        if (d.presupuesto) {
-            var pr = d.presupuesto, max = Math.max.apply(null, pr.items.map(function (i) { return i[1]; }));
-            html += '<h5>Presupuesto por producto · ' + fmtMoney(pr.total) + '</h5><table>' +
-                pr.items.map(function (i) {
+        var pr = lineas(campo(row, 'PRESUPUESTO POR PRODUCTO (PRODUCTO; VALOR)'));
+        if (pr.length) {
+            var items = pr.map(function (p) { return [p[0], num(p[1]) || 0]; }).sort(function (a, b) { return b[1] - a[1]; });
+            var total = items.reduce(function (a, i) { return a + i[1]; }, 0), max = items[0][1] || 1;
+            var vt = num(campo(row, 'VALOR TOTAL INCLUIDAS ADICIONES'));
+            html += '<h5>Presupuesto por producto · ' + fmtMoney(total) + '</h5><table>' +
+                items.map(function (i) {
                     return '<tr><td style="width:34%">' + esc(i[0]) + '</td><td><div class="ddf-bar"><i style="width:' + (i[1] / max * 100).toFixed(1) + '%"></i></div></td>' +
-                        '<td class="n">' + fmtMoney(i[1]) + '</td><td class="n" style="color:#64748B">' + (i[1] / pr.total * 100).toFixed(1) + '%</td></tr>';
-                }).join('') + '</table>' + fuente(pr.fuente);
+                        '<td class="n">' + fmtMoney(i[1]) + '</td><td class="n" style="color:#64748B">' + (total ? (i[1] / total * 100).toFixed(1) : '0') + '%</td></tr>';
+                }).join('') + '</table>' +
+                (vt != null && Math.abs(vt - total) > 1 ? '<div class="ddf-nota">La suma de productos (' + fmtMoney(total) + ') no coincide con el valor total del contrato (' + fmtMoney(vt) + ').</div>' : '');
         }
-        html += '<div class="ddf-2">';
-        if (d.pma) {
-            var p = d.pma.ejecutado / d.pma.programado * 100;
-            html += '<div><h5>PMA (ambiental, social y SST)</h5><div class="ddf-g">' +
-                kpi('Programado', fmtMoney(d.pma.programado)) + kpi('Ejecutado', fmtMoney(d.pma.ejecutado), '#0B5640') + kpi('Ejecución', fmtPct(p)) +
-                '</div>' + fuente(d.pma.fuente) + '</div>';
+        var pp = num(campo(row, 'PMA VALOR PROGRAMADO')), pe = num(campo(row, 'PMA VALOR EJECUTADO'));
+        var hayPersonal = PERSONAL.some(function (c) { return !vacio(campo(row, c)); });
+        if (pp != null || hayPersonal) {
+            html += '<div class="ddf-2">';
+            if (pp != null) {
+                html += '<div><h5>PMA (ambiental, social y SST)</h5><div class="ddf-g">' + kpi('Programado', fmtMoney(pp)) +
+                    (pe != null ? kpi('Ejecutado', fmtMoney(pe), '#0B5640') + kpi('Ejecución', fmtPct(pp ? pe / pp * 100 : null)) : '') + '</div></div>';
+            }
+            if (hayPersonal) {
+                var fc = campo(row, 'FECHA CORTE PERSONAL');
+                html += '<div><h5>Personal y seguridad' + (vacio(fc) ? '' : ' · corte ' + esc(fecha(fc))) + '</h5><div class="ddf-g">' +
+                    PERSONAL.filter(function (c) { return !vacio(campo(row, c)); }).map(function (c) {
+                        return kpi(c.charAt(0) + c.slice(1).toLowerCase(), valor(c, campo(row, c)));
+                    }).join('') + '</div></div>';
+            }
+            html += '</div>';
         }
-        if (d.personal) html += '<div><h5>Personal y seguridad</h5>' + tablaDatos(d.personal.datos) + fuente(d.personal.fuente) + '</div>';
-        html += '</div>';
-        if (d.actualizado) html += '<div class="ddf-f" style="margin-top:14px">Información complementaria actualizada el ' + esc(d.actualizado) + '.</div>';
+        var fu2 = campo(row, 'FUENTES INFORMACIÓN COMPLEMENTARIA');
+        if (!vacio(fu2)) html += '<h5>Fuentes de la información complementaria</h5><div class="ddf-box" style="font-size:10.5px;color:#475569">' + texto(fu2) + '</div>';
         return html;
     }
 
@@ -592,10 +649,8 @@
             sec = document.createElement('div'); sec.id = 'ddf-seguimiento';
             grid.insertAdjacentElement('afterend', sec);
         }
-        var numero = window.DDF_UTIL ? window.DDF_UTIL.analizarContrato(campo(row, 'CONTRATO N°') || row['CONVENIO']).numero : String(row['CONVENIO']);
-        var det = (window.DDF_DETALLE || {})[numero];
         sec.innerHTML = '<h4><i class="fa-solid fa-clipboard-list" style="color:#0B5640"></i> Seguimiento del contrato</h4>' +
-            seccionInforme(row) + (det ? seccionDetalle(det) : '');
+            seccionInforme(row) + seccionComplementaria(row);
 
         // El recuadro "Observaciones Técnicas" del código base muestra la columna OBSERVACIONES
         var ot = campo(row, 'OBSERVACIONES TECNICAS');
