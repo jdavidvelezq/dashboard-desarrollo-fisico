@@ -29,15 +29,6 @@
     // ---------------------------------------------------------------- 1 y 2: red
     var nativeFetch = window.fetch.bind(window);
 
-    // Información complementaria por contrato (assets/contratos/detalle.json), tomada de los
-    // documentos del contrato. Solo completa campos que el informe no trae; nunca reemplaza datos.
-    var DETALLE = {};
-    var detalleListo = nativeFetch('./assets/contratos/detalle.json?t=' + Date.now())
-        .then(function (r) { return r.ok ? r.json() : {}; })
-        .then(function (d) { DETALLE = d || {}; })
-        .catch(function () { /* sin detalle */ })
-        .then(function () { window.DDF_DETALLE = DETALLE; });
-
     // Fotos: mientras no exista Apps Script propio, se leen de un índice estático
     // (assets/fotos/drive_index.json) con las URL de las fotos compartidas en Drive.
     var indiceFotos = null;
@@ -61,7 +52,7 @@
             return Promise.reject(new TypeError('[Adaptador] Supabase del proyecto original deshabilitado'));
         }
         if (url.indexOf(OLD_SHEET) !== -1) {
-            return detalleListo.then(function () { return nativeFetch(sheetUrl(), init); });
+            return nativeFetch(sheetUrl(), init);
         }
         if (OLD_SCRIPT_RE.test(url)) {
             if (!CFG.APPS_SCRIPT_URL && /[?&]convenio=/.test(url)) {
@@ -194,7 +185,8 @@
     ];
 
     function esInformeContratos(headers) {
-        return headers.map(norm).indexOf(norm('CONTRATO N°')) !== -1;
+        var h = headers.map(norm);
+        return h.indexOf(norm('CONTRATO N°')) !== -1 && h.indexOf(norm('OBJETO CONTRATO')) !== -1;
     }
 
     function encabezados(ws) {
@@ -285,16 +277,14 @@
                         row['MUNICIPIO (FUENTE)'] = muni ? 'Texto del OBJETO CONTRATO' : 'No indicado en el informe';
                     }
 
-                    var det = DETALLE[x.numero];
-                    if (det && det.campos) {
-                        Object.keys(det.campos).forEach(function (k) {
-                            var actual = row[k];
-                            if (actual === undefined || actual === null || String(actual).trim() === '') {
-                                row[k] = det.campos[k];
-                                if (k === 'MUNICIPIO') row['MUNICIPIO (FUENTE)'] = 'Documentos del contrato';
-                            }
-                        });
+                    // Información complementaria en la misma fila (columnas VÍA, CÓDIGO VÍA, ABSCISAS, LONGITUD...)
+                    var g = function (n) { var k = buscarClave(keys, n); return k === undefined ? '' : String(row[k] == null ? '' : row[k]).trim(); };
+                    if (g('MUNICIPIO') && !row['MUNICIPIO (FUENTE)']) row['MUNICIPIO (FUENTE)'] = 'Columna MUNICIPIO';
+                    if (!g('NOMBRE VIAS PRIORIZADAS') && g('VÍA')) {
+                        row['NOMBRE VIAS PRIORIZADAS'] = g('VÍA') + (g('CÓDIGO VÍA') ? ' (' + g('CÓDIGO VÍA') + ')' : '') +
+                            (g('ABSCISA INICIO') ? ', tramo ' + g('ABSCISA INICIO') + ' a ' + g('ABSCISA FIN') : '');
                     }
+                    if (!g('ALCANCE (m)') && g('LONGITUD INTERVENIDA (m)')) row['ALCANCE (m)'] = g('LONGITUD INTERVENIDA (m)');
 
                     var kTipo = buscarClave(keys, 'TIPO');
                     row['INDICADOR'] = normalizarTipo(kTipo !== undefined ? row[kTipo] : '');
