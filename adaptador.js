@@ -125,6 +125,44 @@
         return { texto: unaLinea, numero: numero, derivado: esDerivado, padre: padre };
     }
 
+    // ---------------------------------------------------------------- 4b: municipio
+    // El informe no trae columna MUNICIPIO. Solo se toma cuando el OBJETO CONTRATO lo dice
+    // textualmente en singular ("... MUNICIPIO DE <nombre> ...") y el nombre es uno de los
+    // 125 municipios de Antioquia. Si no aparece, o aparecen varios distintos, queda vacío.
+    var MUNICIPIOS_ANT = ('Medellín|Abejorral|Abriaquí|Alejandría|Amagá|Amalfi|Andes|Angelópolis|Angostura|Anorí|Anzá|' +
+        'Apartadó|Arboletes|Argelia|Armenia|Barbosa|Bello|Belmira|Betania|Betulia|Briceño|Buriticá|Cáceres|Caicedo|' +
+        'Caldas|Campamento|Cañasgordas|Caracolí|Caramanta|Carepa|Carolina del Príncipe|Caucasia|Chigorodó|Cisneros|' +
+        'Ciudad Bolívar|Cocorná|Concepción|Concordia|Copacabana|Dabeiba|Donmatías|Ebéjico|El Bagre|El Carmen de Viboral|' +
+        'El Peñol|El Retiro|El Santuario|Entrerríos|Envigado|Fredonia|Frontino|Giraldo|Girardota|Gómez Plata|Granada|' +
+        'Guadalupe|Guarne|Guatapé|Heliconia|Hispania|Itagüí|Ituango|Jardín|Jericó|La Ceja|La Estrella|La Pintada|' +
+        'La Unión|Liborina|Maceo|Marinilla|Montebello|Murindó|Mutatá|Nariño|Nechí|Necoclí|Olaya|Peque|Pueblorrico|' +
+        'Puerto Berrío|Puerto Nare|Puerto Triunfo|Remedios|Rionegro|Sabanalarga|Sabaneta|Salgar|San Andrés de Cuerquia|' +
+        'San Carlos|San Francisco|San Jerónimo|San José de la Montaña|San Juan de Urabá|San Luis|San Pedro de los Milagros|' +
+        'San Pedro de Urabá|San Rafael|San Roque|San Vicente Ferrer|Santa Bárbara|Santa Fe de Antioquia|Santa Rosa de Osos|' +
+        'Santo Domingo|Segovia|Sonsón|Sopetrán|Támesis|Tarazá|Tarso|Titiribí|Toledo|Turbo|Uramita|Urrao|Valdivia|' +
+        'Valparaíso|Vegachí|Venecia|Vigía del Fuerte|Yalí|Yarumal|Yolombó|Yondó|Zaragoza').split('|');
+    var ALIAS_MUNI = { 'CAROLINA': 'Carolina del Príncipe', 'RETIRO': 'El Retiro', 'SANTUARIO': 'El Santuario',
+        'PENOL': 'El Peñol', 'CARMEN DE VIBORAL': 'El Carmen de Viboral', 'SANTAFE DE ANTIOQUIA': 'Santa Fe de Antioquia',
+        'DON MATIAS': 'Donmatías' };
+    var CANDIDATOS_MUNI = MUNICIPIOS_ANT.map(function (m) { return [norm(m), m]; })
+        .concat(Object.keys(ALIAS_MUNI).map(function (k) { return [k, ALIAS_MUNI[k]]; }))
+        .sort(function (a, b) { return b[0].length - a[0].length; });
+
+    function municipioDesdeObjeto(objeto) {
+        var s = norm(objeto).replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ');
+        var m, hallados = {};
+        var resto = s;
+        while ((m = /(?:^| )MUNICIPIO DE /.exec(resto))) {
+            var tras = resto.slice(m.index + m[0].length) + ' ';
+            for (var i = 0; i < CANDIDATOS_MUNI.length; i++) {
+                if (tras.indexOf(CANDIDATOS_MUNI[i][0] + ' ') === 0) { hallados[CANDIDATOS_MUNI[i][1]] = true; break; }
+            }
+            resto = tras;
+        }
+        var lista = Object.keys(hallados);
+        return lista.length === 1 ? lista[0].toUpperCase() : '';
+    }
+
     // ---------------------------------------------------------------- 3: columnas
     // nombre que espera DIAT  <-  encabezado del informe de contratos
     var ALIAS = [
@@ -231,6 +269,13 @@
                     row['SUBREGION'] = sub.principal;
                     row['SUBREGIONES (DETALLE)'] = sub.detalle;
 
+                    if (!String(row['MUNICIPIO'] || '').trim()) {
+                        var kObj = buscarClave(keys, 'OBJETO CONTRATO');
+                        var muni = municipioDesdeObjeto(kObj !== undefined ? row[kObj] : '');
+                        row['MUNICIPIO'] = muni;
+                        row['MUNICIPIO (FUENTE)'] = muni ? 'Texto del OBJETO CONTRATO' : 'No indicado en el informe';
+                    }
+
                     var kTipo = buscarClave(keys, 'TIPO');
                     row['INDICADOR'] = normalizarTipo(kTipo !== undefined ? row[kTipo] : '');
                 });
@@ -241,7 +286,7 @@
         return true;
     }
 
-    window.DDF_UTIL = { norm: norm, normalizarSubregion: normalizarSubregion, analizarContrato: analizarContrato, buscarClave: buscarClave };
+    window.DDF_UTIL = { norm: norm, normalizarSubregion: normalizarSubregion, analizarContrato: analizarContrato, buscarClave: buscarClave, municipioDesdeObjeto: municipioDesdeObjeto };
 
     if (!instalar()) {
         document.addEventListener('DOMContentLoaded', instalar);
